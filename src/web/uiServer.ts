@@ -4,6 +4,7 @@ import { dirname, extname, join, resolve } from "node:path";
 
 import { loadConfig } from "../config";
 import { FilenStorageProvider } from "../services/filenStorageProvider";
+import { logDebug, logError, logInfo, logWarn } from "../utils/logger";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -43,10 +44,21 @@ const DEFAULT_OPTIONS: JsonRecord = {
 };
 
 export async function startUiServer(port: number): Promise<void> {
+  logInfo("ui", "UI server starting", {
+    port,
+    optionsPath: getOptionsPath(),
+    uiDebug: process.env.UI_DEBUG ?? "",
+    uiLogPath: process.env.UI_LOG_PATH ?? "",
+  });
+
   const server = createServer(async (req, res) => {
     try {
       await routeRequest(req, res);
     } catch (error: unknown) {
+      logError("ui", "Unhandled route error", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+
       sendJson(res, 500, {
         error: error instanceof Error ? error.message : "Unbekannter Serverfehler",
       });
@@ -64,6 +76,7 @@ export async function startUiServer(port: number): Promise<void> {
 async function routeRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const method = req.method ?? "GET";
   const url = req.url ?? "/";
+  logDebug("ui", "Request received", { method, url });
 
   if (method === "GET" && url === "/") {
     redirect(res, "/setup.html");
@@ -183,11 +196,13 @@ function validateOptions(options: JsonRecord): void {
 async function listBackups(): Promise<JsonRecord> {
   const options = readOptions();
   const provider = String(options.storage_provider ?? "local");
+  logInfo("ui", "Loading backups", { provider });
 
   if (provider === "filen") {
     const config = loadConfig(getOptionsPath());
 
     if (!config.storage.filen) {
+      logWarn("ui", "Filen selected but config.storage.filen missing");
       return {
         provider,
         items: [],
@@ -199,6 +214,10 @@ async function listBackups(): Promise<JsonRecord> {
     try {
       const filenProvider = new FilenStorageProvider(config.storage.filen);
       const remote = await filenProvider.listBackupFiles();
+      logInfo("ui", "Filen backup listing finished", {
+        targetFolder: remote.targetFolder,
+        count: remote.items.length,
+      });
 
       return {
         provider,
@@ -208,6 +227,10 @@ async function listBackups(): Promise<JsonRecord> {
         storage: remote.storage,
       };
     } catch (error: unknown) {
+      logError("ui", "Filen backup listing failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+
       return {
         provider,
         items: [],
@@ -218,6 +241,7 @@ async function listBackups(): Promise<JsonRecord> {
   }
 
   if (provider !== "local") {
+    logWarn("ui", "Unknown storage provider", { provider });
     return {
       provider,
       items: [],
@@ -229,6 +253,7 @@ async function listBackups(): Promise<JsonRecord> {
   const baseDir = String(options.local_storage_directory ?? "").trim();
 
   if (baseDir.length === 0 || !existsSync(baseDir)) {
+    logWarn("ui", "Local backup directory not found", { baseDir });
     return {
       provider,
       items: [],
@@ -249,6 +274,11 @@ async function listBackups(): Promise<JsonRecord> {
       };
     })
     .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+
+  logInfo("ui", "Local backup listing finished", {
+    baseDir,
+    count: items.length,
+  });
 
   return {
     provider,

@@ -3,4 +3,5 @@ node_modules/
 *.log
 .DS_Store
 tmp/
+.tmp-ui-test/
 config/config.json

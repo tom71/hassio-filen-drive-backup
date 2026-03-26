@@ -119,6 +119,49 @@ docker run --rm \
 
 Wichtig: `POST /api/options` benoetigt Schreibzugriff auf `UI_CONFIG_PATH`. Bei einem Read-only-Mount tritt sonst `EROFS: read-only file system` auf.
 
+### Helper-Skripte
+
+Fuer lokale Testlaeufe stehen zwei Skripte bereit:
+
+```bash
+./scripts/run-ui.sh
+./scripts/run-backup.sh
+./scripts/clean-build.sh
+```
+
+Wichtige Umgebungsvariablen:
+
+- `CONFIG_FILE`: Pfad zur `options.json` (Default: `.tmp-ui-test/options.json`)
+- `AUTH_STATE_FILE`: Optionaler Pfad zum gespeicherten Filen Auth-State (wird gemountet, falls vorhanden)
+- `SOURCE_DIR`: Quellverzeichnis fuer Backups (Default: aktuelles Projektverzeichnis, wird nach `/backup` gemountet)
+- `LOCAL_BACKUP_DIR`: Lokales Ziel fuer `.enc`-Dateien im Local-Provider-Modus (wird nach `/share/filen-backups` gemountet)
+- `IMAGE`: Docker-Image-Name/Tag (Default: `hassio-filen-drive-backup:test`)
+- `LOG_FILE`: Log-Datei fuer `run-ui.sh` (Default: `.tmp-ui-test/ui.log`)
+- `UI_DEBUG`: Schaltet Debug-Logs fuer `run-ui.sh` ein/aus (Default: `true`)
+- `NO_CACHE`: Fuer `clean-build.sh`, standardmaessig `true`
+- `PULL`: Fuer `clean-build.sh`, standardmaessig `true`
+- `PRUNE_BUILDER`: Optional fuer `clean-build.sh`, bei `true` wird vorab `docker builder prune -af` ausgefuehrt
+
+Beispiel:
+
+```bash
+SOURCE_DIR="$HOME/some-folder" \
+AUTH_STATE_FILE="$PWD/.tmp-ui-test/filen-auth-state.json" \
+./scripts/run-backup.sh
+```
+
+Clean Build Beispiel:
+
+```bash
+IMAGE="hassio-filen-drive-backup:test" ./scripts/clean-build.sh
+```
+
+UI mit explizitem Logfile:
+
+```bash
+LOG_FILE="$PWD/.tmp-ui-test/ui.log" UI_DEBUG=true ./scripts/run-ui.sh
+```
+
 ## Build
 
 Voraussetzung ist Node.js ab Version 20.

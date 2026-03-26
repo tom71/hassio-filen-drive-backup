@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 
 import { FilenAuthState, FilenStorageConfig } from "../types/config";
 import { DownloadResult, StorageProvider, UploadMetadata, UploadResult } from "./storageProvider";
+import { logDebug, logInfo, logWarn } from "../utils/logger";
 
 export type FilenRemoteBackupItem = {
   name: string;
@@ -23,10 +24,15 @@ export class FilenStorageProvider implements StorageProvider {
   async listBackupFiles(): Promise<{ targetFolder: string; items: FilenRemoteBackupItem[]; storage: FilenStorageUsage }> {
     const { sdk, cleanup } = await this.createAuthenticatedSdk({});
     const targetFolder = normalizeTargetFolder(this.config.targetFolder);
+    logInfo("filen", "Listing remote backups", { targetFolder });
 
     try {
       const items = await this.collectEncFiles(sdk, targetFolder);
       const storage = await this.readStorageUsage(sdk);
+      logInfo("filen", "Remote backup listing finished", {
+        targetFolder,
+        count: items.length,
+      });
 
       return {
         targetFolder,
@@ -224,68 +230,51 @@ export class FilenStorageProvider implements StorageProvider {
     sdk: InstanceType<typeof import("@filen/sdk").FilenSDK>,
     rootPath: string,
   ): Promise<FilenRemoteBackupItem[]> {
-    const queue = [rootPath];
+    const fsApi = sdk.fs();
+    const allPaths = await fsApi.readdir({ path: rootPath, recursive: true });
+    logDebug("filen", "fs.readdir completed", {
+      rootPath,
+      count: allPaths.length,
+      sample: allPaths.slice(0, 10),
+    });
+
+    const encPaths = allPaths.filter((path) => path.endsWith(".enc"));
+    logDebug("filen", "Filtered .enc paths", {
+      rootPath,
+      count: encPaths.length,
+      sample: encPaths.slice(0, 10),
+    });
+
     const result: FilenRemoteBackupItem[] = [];
 
-    while (queue.length > 0) {
-      const currentPath = queue.shift();
+    for (const listedPath of encPaths) {
+      const filePath = listedPath.startsWith("/") ? listedPath : posix.join(rootPath, listedPath);
 
-      if (!currentPath) {
-        continue;
-      }
+      try {
+        const stat = await fsApi.stat({ path: filePath });
 
-      const entries = await this.readDirectoryEntries(sdk, currentPath);
-
-      for (const entry of entries) {
-        const fileName = readString(entry, ["name", "basename", "filename"]);
-        const explicitPath = readString(entry, ["path", "fullPath", "filepath"]);
-        const entryPath = normalizeEntryPath(currentPath, fileName, explicitPath);
-
-        if (!entryPath) {
+        if (!stat.isFile()) {
           continue;
         }
-
-        if (isDirectoryEntry(entry)) {
-          queue.push(entryPath);
-          continue;
-        }
-
-        if (!isFileEntry(entry) || !entryPath.endsWith(".enc")) {
-          continue;
-        }
-
-        const sizeBytes = readNumber(entry, ["size", "sizeBytes", "bytes"]);
-        const modifiedAt = readDate(entry, ["lastModified", "modifiedAt", "mtime", "updatedAt", "timestamp"]);
 
         result.push({
-          name: fileName || posix.basename(entryPath),
-          path: entryPath,
-          sizeBytes: sizeBytes >= 0 ? sizeBytes : 0,
-          modifiedAt: modifiedAt || new Date(0).toISOString(),
+          name: posix.basename(filePath),
+          path: filePath,
+          sizeBytes: stat.size,
+          modifiedAt: new Date(stat.mtimeMs).toISOString(),
         });
+      } catch (error: unknown) {
+        logWarn("filen", "Could not stat remote path", {
+          listedPath,
+          resolvedPath: filePath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+
+        // Einzelne fehlerhafte Pfade sollen das gesamte Listing nicht blockieren.
       }
     }
 
     return result;
-  }
-
-  private async readDirectoryEntries(
-    sdk: InstanceType<typeof import("@filen/sdk").FilenSDK>,
-    directoryPath: string,
-  ): Promise<Array<Record<string, unknown>>> {
-    const fsApi = sdk.fs() as unknown as {
-      readdir: (args: { path: string } | string) => Promise<unknown>;
-    };
-
-    let rawResult: unknown;
-
-    try {
-      rawResult = await fsApi.readdir({ path: directoryPath });
-    } catch {
-      rawResult = await fsApi.readdir(directoryPath);
-    }
-
-    return normalizeEntries(rawResult);
   }
 
   private async readStorageUsage(sdk: InstanceType<typeof import("@filen/sdk").FilenSDK>): Promise<FilenStorageUsage> {
@@ -298,48 +287,26 @@ export class FilenStorageProvider implements StorageProvider {
     }
 
     try {
-      const stat = await fsApi.statfs({});
+      const stat = await fsApi.statfs();
       const normalized = normalizeRecord(stat);
 
       if (!normalized) {
         return {};
       }
 
-      return {
+      const usage = {
         usedBytes: readNumber(normalized, ["used", "usedBytes", "size"]),
         availableBytes: readNumber(normalized, ["available", "availableBytes", "free"]),
         capacityBytes: readNumber(normalized, ["capacity", "capacityBytes", "total"]),
       };
+
+      logDebug("filen", "Read storage usage", usage);
+
+      return usage;
     } catch {
       return {};
     }
   }
-}
-
-function normalizeEntries(rawResult: unknown): Array<Record<string, unknown>> {
-  if (Array.isArray(rawResult)) {
-    return rawResult.map((entry) => normalizeRecord(entry)).filter((entry): entry is Record<string, unknown> => Boolean(entry));
-  }
-
-  const record = normalizeRecord(rawResult);
-
-  if (!record) {
-    return [];
-  }
-
-  const candidates = [record.items, record.entries, record.files, record.nodes, record.children];
-
-  for (const candidate of candidates) {
-    if (!Array.isArray(candidate)) {
-      continue;
-    }
-
-    return candidate
-      .map((entry) => normalizeRecord(entry))
-      .filter((entry): entry is Record<string, unknown> => Boolean(entry));
-  }
-
-  return [];
 }
 
 function normalizeRecord(input: unknown): Record<string, unknown> | null {
@@ -372,69 +339,6 @@ function readNumber(input: Record<string, unknown>, keys: string[]): number {
   }
 
   return -1;
-}
-
-function readDate(input: Record<string, unknown>, keys: string[]): string {
-  for (const key of keys) {
-    const value = input[key];
-
-    if (value instanceof Date && !Number.isNaN(value.getTime())) {
-      return value.toISOString();
-    }
-
-    if (typeof value === "string" && value.trim().length > 0) {
-      const parsed = new Date(value);
-
-      if (!Number.isNaN(parsed.getTime())) {
-        return parsed.toISOString();
-      }
-    }
-
-    if (typeof value === "number" && Number.isFinite(value)) {
-      const parsed = new Date(value > 1_000_000_000_000 ? value : value * 1000);
-
-      if (!Number.isNaN(parsed.getTime())) {
-        return parsed.toISOString();
-      }
-    }
-  }
-
-  return "";
-}
-
-function isDirectoryEntry(entry: Record<string, unknown>): boolean {
-  const kind = readString(entry, ["type", "entryType", "kind"]).toLowerCase();
-  if (["directory", "dir", "folder"].includes(kind)) {
-    return true;
-  }
-
-  return entry.isDirectory === true || entry.directory === true;
-}
-
-function isFileEntry(entry: Record<string, unknown>): boolean {
-  const kind = readString(entry, ["type", "entryType", "kind"]).toLowerCase();
-
-  if (["file", "regular"].includes(kind)) {
-    return true;
-  }
-
-  if (entry.isFile === true || entry.file === true) {
-    return true;
-  }
-
-  return !isDirectoryEntry(entry);
-}
-
-function normalizeEntryPath(parentPath: string, name: string, explicitPath: string): string {
-  if (explicitPath) {
-    return explicitPath.startsWith("/") ? explicitPath : `/${explicitPath}`;
-  }
-
-  if (!name) {
-    return "";
-  }
-
-  return posix.join(parentPath, name);
 }
 
 function normalizeTargetFolder(targetFolder?: string): string {
