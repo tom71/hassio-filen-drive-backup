@@ -1,0 +1,16 @@
+{
+  "sourceDirectory": "/backup",
+  "workingDirectory": "/tmp/hassio-filen-backup",
+  "encryption": {
+    "passphrase": "local-filen-test-passphrase"
+  },
+  "storage": {
+    "type": "filen",
+    "filen": {
+      "email": "th.cristo@gmx.de",
+      "password": "3pcrZqPbex.wC9",
+      "twoFactorCode": "818271",
+      "targetFolder": "/Home Assistant Backups"
+    }
+  }
+}
